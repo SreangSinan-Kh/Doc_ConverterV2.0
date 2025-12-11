@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: DocConvert-bot
+    env: python
+    # មិនចាំបាច់ដាក់ pythonVersion នៅទីនេះទេ ប្រសិនបើអ្នកមានឯកសារ .python-version
+    # ប៉ុន្តែដាក់ក៏មិនអីដែរ
+    
+    # === កែសម្រួលបន្ទាត់នេះ ===
+    # យើងត្រូវបន្ថែម poppler-utils (សម្រាប់ pdf2image) 
+    # និង tesseract-ocr-khm (សម្រាប់អានអក្សរខ្មែរ)
+    buildCommand: apt-get update && apt-get install -y ffmpeg tesseract-ocr tesseract-ocr-khm poppler-utils && pip install -r requirements.txt
+    
+    startCommand: python main.py 
+    
+    plan: free
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.12.1

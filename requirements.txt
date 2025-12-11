@@ -1,0 +1,11 @@
+# ឯកសារ: requirements.txt
+
+# ជំនួស python-telegram-bot==20.4 ដោយបន្ទាត់ខាងក្រោម
+python-telegram-bot[webhooks]==20.4 
+Pillow
+pytesseract
+PyPDF2
+pdf2image
+ffmpeg-python
+gunicorn
+gevent
