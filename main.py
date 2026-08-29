@@ -26,20 +26,24 @@ try:
     from PyPDF2 import PdfReader, PdfWriter, PdfMerger
     from pdf2image import convert_from_path
 except ImportError:
-    # ក្នុង Render buildCommand នឹងដំឡើង Library ទាំងអស់
-    # នេះគ្រាន់តែជាការពិនិត្យក្នុងតំបន់ប៉ុណ្ណោះ
     print("!!! កំហុស៖ សូមប្រាកដថាបានតម្លើង Library ទាំងអស់៖ pip install PyPDF2 pdf2image Pillow python-telegram-bot ffmpeg-python")
     sys.exit(1)
 
 # --- ការកំណត់តម្លៃសំខាន់ៗសម្រាប់ Render Deployment ---
-# BOT_TOKEN ត្រូវបានយកពី Environment Variable (ដូចដែលបានកំណត់ក្នុង render.yaml)
 BOT_TOKEN: Final = os.environ.get("BOT_TOKEN", "") 
 MAX_FILE_SIZE: Final = 50 * 1024 * 1024 # កំណត់ទំហំ File អតិបរមា 50 MB
 
 # ទទួលបាន URL និង PORT ពី Render Environment
-# RENDER_EXTERNAL_URL គឺជា URL HTTPS ពេញលេញរបស់ Render Service
 WEBHOOK_URL: Final = os.environ.get("RENDER_EXTERNAL_URL", "") 
 PORT: Final = int(os.environ.get("PORT", "8000")) 
+
+# --- 🔒 ប្រព័ន្ធសុវត្ថិភាព (WHITELIST) ---
+# សូមប្តូរលេខ 371687578 ទៅជា User ID ពិតប្រាកដរបស់បង 
+# បើចង់អនុញ្ញាតឱ្យមិត្តភក្តិប្រើប្រាស់បន្ថែម គ្រាន់តែបន្ថែម ID គេចូល (ឧ. [371687578, 123456789])
+ALLOWED_USERS = [371687578]
+
+# បង្កើត Filter សម្ងាត់ (ទទួលស្គាល់តែអ្នកដែលមាន ID ក្នុង ALLOWED_USERS ប៉ុណ្ណោះ)
+secure_filter = filters.User(user_id=ALLOWED_USERS)
 
 # កំណត់ 'ស្ថានភាព' (States)
 (SELECT_ACTION,
@@ -55,13 +59,10 @@ PORT: Final = int(os.environ.get("PORT", "8000"))
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# មុខងារនេះត្រូវបានរក្សាទុក ប៉ុន្តែវាគួរតែត្រឡប់ True ព្រោះ FFmpeg ត្រូវបានដំឡើងតាមរយៈ apt-get ក្នុង render.yaml
 def is_ffmpeg_installed():
     return True 
 
 # --- អនុគមន៍ដំណើរការនៅខាងក្រោយ (Background Tasks) ---
-# (រក្សាទុកអនុគមន៍ដំណើរការនៅខាងក្រោយទាំងអស់របស់អ្នក ដោយសារពួកវាត្រឹមត្រូវ)
-
 async def pdf_to_img_task(chat_id, file_path, msg, context, fmt):
     try:
         images = convert_from_path(file_path, dpi=200, fmt=fmt)
@@ -261,7 +262,7 @@ async def extract_archive_task(chat_id, file_path, msg, context):
             try: await context.bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
             except Exception: pass
 
-# --- អនុគមន៍សម្រាប់គ្រប់គ្រងលំហូរការងារ (រក្សាទុកទាំងអស់ដូចដើម) ---
+# --- អនុគមន៍សម្រាប់គ្រប់គ្រងលំហូរការងារ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
@@ -276,7 +277,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton("🗜️ គ្រប់គ្រងឯកសារ Archive", callback_data='archive_manager')],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    text = '👋 សួស្តី! សូមជ្រើសរើសមុខងារខាងក្រោម៖'
+    text = '👋 សួស្តី! ខ្ញុំជា Bot ផ្ទាល់ខ្លួនរបស់អ្នក។ សូមជ្រើសរើសមុខងារខាងក្រោម៖'
     if update.callback_query:
         await update.callback_query.answer()
         await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
@@ -286,7 +287,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     help_text = """
-សួស្តី! ខ្ញុំជា Bot សម្រាប់គ្រប់គ្រងឯកសារ។ នេះជាមុខងារដែលខ្ញុំអាចធ្វើបាន៖
+នេះជាមុខងារដែលខ្ញុំអាចធ្វើបាន៖
 
 📄 **មុខងារ PDF:**
 - `/start` រួចចុច "PDF ទៅជា រូបភាព"
@@ -509,6 +510,10 @@ async def start_video_converter(update: Update, context: ContextTypes.DEFAULT_TY
         return SELECT_ACTION
     video_formats = ['3G2', '3GP', 'AVI', 'FLV', 'MKV', 'MOV', 'MP4', 'MPG', 'OGV', 'WEBM', 'WMV']
     keyboard = create_format_buttons(video_formats, "video")
+    
+    # បន្ថែមប៊ូតុង Video ទៅ MP3
+    keyboard.insert(0, [InlineKeyboardButton("🎵 បំប្លែងទៅជា MP3 (Audio)", callback_data='video_mp3')])
+    
     await query.edit_message_text(text="សូមជ្រើសរើសទ្រង់ទ្រាយវីដេអូដែលអ្នកចង់បាន៖", reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECT_ACTION
 
@@ -516,7 +521,8 @@ async def select_video_output(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     context.user_data['output_format'] = query.data.split('_')[1]
-    await query.edit_message_text(f"✅ បានជ្រើសរើស {context.user_data['output_format'].upper()}។\n\nឥឡូវ សូមផ្ញើវីដេអូមកឱ្យខ្ញុំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    format_text = context.user_data['output_format'].upper()
+    await query.edit_message_text(f"✅ បានជ្រើសរើស {format_text}។\n\nឥឡូវ សូមផ្ញើវីដេអូមកឱ្យខ្ញុំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
     return WAITING_FOR_VIDEO_FILE
 
 async def receive_video_for_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -532,7 +538,9 @@ async def receive_video_for_conversion(update: Update, context: ContextTypes.DEF
     await file.download_to_drive(file_path)
     output_format = context.user_data.get('output_format', 'mp4')
     msg = await update.message.reply_text(f"✅ ទទួលបានវីដេអូ! កំពុងបំប្លែង...")
-    asyncio.create_task(media_conversion_task(update.effective_chat.id, file_path, output_format, msg, context, media_type='video'))
+    
+    target_media_type = 'audio' if output_format == 'mp3' else 'video'
+    asyncio.create_task(media_conversion_task(update.effective_chat.id, file_path, output_format, msg, context, media_type=target_media_type))
     return ConversationHandler.END
 
 async def start_archive_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -603,7 +611,6 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # --- អនុគមន៍ថ្មីសម្រាប់ទទួល Commands ដោយផ្ទាល់ ---
 
 async def start_pdf_to_img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម PDF to Image តាមរយៈ Command """
     await update.message.reply_text("សូមជ្រើសរើសប្រភេទរូបភាព៖", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("➡️ បំប្លែងទៅជា JPG", callback_data='fmt_jpeg')],
         [InlineKeyboardButton("➡️ បំប្លែងទៅជា PNG", callback_data='fmt_png')],
@@ -612,34 +619,28 @@ async def start_pdf_to_img_command(update: Update, context: ContextTypes.DEFAULT
     return SELECT_ACTION
 
 async def start_merge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Merge PDF តាមរយៈ Command """
     context.user_data['merge_files'] = []
     await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF ម្ដងមួយៗ។ (ទំហំឯកសារនីមួយៗមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)\nនៅពេលរួចរាល់ សូមវាយ /done ។")
     return WAITING_FOR_MERGE
 
 async def start_split_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Split PDF តាមរយៈ Command """
     await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បំបែក។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
     return WAITING_FOR_SPLIT_FILE
 
 async def start_compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Compress PDF តាមរយៈ Command """
     await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បន្ថយទំហំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
     return WAITING_FOR_COMPRESS
 
 async def start_img_to_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Image to PDF តាមរយៈ Command """
     context.user_data['img_to_pdf_files'] = []
     await update.message.reply_text("✅ សូមផ្ញើរូបភាពម្ដងមួយៗ។\nនៅពេលរួចរាល់ សូមវាយ /done ។")
     return WAITING_FOR_IMG_TO_PDF
 
 async def start_img_to_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Image to Text តាមរយៈ Command """
     await update.message.reply_text("✅ សូមផ្ញើរូបភាពមួយមកឱ្យខ្ញុំ ដើម្បីបំប្លែងទៅជាអក្សរ។\nដើម្បីបោះបង់ សូមវាយ /cancel")
     return WAITING_FOR_IMG_TO_TEXT_FILE
 
 async def start_audio_converter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Audio Converter តាមរយៈ Command """
     if not is_ffmpeg_installed():
         await update.message.reply_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។ មុខងារនេះមិនអាចប្រើបានទេ។")
         return ConversationHandler.END
@@ -649,17 +650,16 @@ async def start_audio_converter_command(update: Update, context: ContextTypes.DE
     return SELECT_ACTION
 
 async def start_video_converter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Video Converter តាមរយៈ Command """
     if not is_ffmpeg_installed():
         await update.message.reply_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។ មុខងារនេះមិនអាចប្រើបានទេ។")
         return ConversationHandler.END
     video_formats = ['3G2', '3GP', 'AVI', 'FLV', 'MKV', 'MOV', 'MP4', 'MPG', 'OGV', 'WEBM', 'WMV']
     keyboard = create_format_buttons(video_formats, "video")
+    keyboard.insert(0, [InlineKeyboardButton("🎵 បំប្លែងទៅជា MP3 (Audio)", callback_data='video_mp3')])
     await update.message.reply_text(text="សូមជ្រើសរើសទ្រង់ទ្រាយវីដេអូដែលអ្នកចង់បាន៖", reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECT_ACTION
 
 async def start_archive_manager_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Archive Manager តាមរយៈ Command """
     keyboard = [
         [InlineKeyboardButton("➕ បង្កើតឯកសារ ZIP", callback_data='archive_create')],
         [InlineKeyboardButton("➖ ពន្លាឯកសារ Archive", callback_data='archive_extract')],
@@ -667,6 +667,11 @@ async def start_archive_manager_command(update: Update, context: ContextTypes.DE
     ]
     await update.message.reply_text(text="សូមជ្រើសរើសសកម្មភាពសម្រាប់ Archive៖", reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECT_ACTION
+
+# --- អនុគមន៍សម្រាប់អ្នកប្រើប្រាស់ដែលមិនត្រូវបានអនុញ្ញាត ---
+async def unauthorized_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("សុំទោស! ខ្ញុំជា Bot ឯកជន (Private Bot) របស់អ្នកបង្កើតខ្ញុំ។ អ្នកមិនមានសិទ្ធិប្រើប្រាស់ខ្ញុំទេ។")
+    return ConversationHandler.END
 
 # --- Main Application Runner (កែប្រែសម្រាប់ Render Webhook) ---
 def main() -> None:
@@ -677,24 +682,27 @@ def main() -> None:
         
     if not WEBHOOK_URL:
         print("!!! កំហុស៖ RENDER_EXTERNAL_URL មិនត្រូវបានកំណត់។ ត្រូវប្រាកដថាប្រើ Render Web Service Environment។")
-        # មិនអាចដំណើរការ Webhook ដោយគ្មាន URL ពេញលេញបានទេ។
         sys.exit(1)
 
     application = Application.builder().token(BOT_TOKEN).read_timeout(30).build()
     
-    # --- Conversation Handler (រក្សាទុកដូចដើម) ---
+    # --- ការចាក់សោរ Filter ---
+    # ប្រសិនបើអ្នកប្រើមិនស្ថិតនៅក្នុងបញ្ជី ALLOWED_USERS ទេ វានឹងរុញទៅកាន់ unauthorized_user
+    # ប្រសិនបើអ្នកប្រើស្ថិតនៅក្នុងបញ្ជី ALLOWED_USERS វានឹងដំណើរការធម្មតា
+    
     conv_handler = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start),
-            CommandHandler("pdf_to_img", start_pdf_to_img_command),
-            CommandHandler("merge_pdf", start_merge_command),
-            CommandHandler("split_pdf", start_split_command),
-            CommandHandler("compress_pdf", start_compress_command),
-            CommandHandler("img_to_pdf", start_img_to_pdf_command),
-            CommandHandler("img_to_text", start_img_to_text_command),
-            CommandHandler("audio_converter", start_audio_converter_command),
-            CommandHandler("video_converter", start_video_converter_command),
-            CommandHandler("archive_manager", start_archive_manager_command),
+            # ប្រើ secure_filter សម្រាប់ Command ទាំងអស់ដើម្បីការពារ
+            CommandHandler("start", start, filters=secure_filter),
+            CommandHandler("pdf_to_img", start_pdf_to_img_command, filters=secure_filter),
+            CommandHandler("merge_pdf", start_merge_command, filters=secure_filter),
+            CommandHandler("split_pdf", start_split_command, filters=secure_filter),
+            CommandHandler("compress_pdf", start_compress_command, filters=secure_filter),
+            CommandHandler("img_to_pdf", start_img_to_pdf_command, filters=secure_filter),
+            CommandHandler("img_to_text", start_img_to_text_command, filters=secure_filter),
+            CommandHandler("audio_converter", start_audio_converter_command, filters=secure_filter),
+            CommandHandler("video_converter", start_video_converter_command, filters=secure_filter),
+            CommandHandler("archive_manager", start_archive_manager_command, filters=secure_filter),
         ],
         states={
             SELECT_ACTION: [
@@ -714,36 +722,46 @@ def main() -> None:
                 CallbackQueryHandler(start_extract_archive, pattern='^archive_extract$'),
                 CallbackQueryHandler(start, pattern='^main_menu$'),
             ],
-            WAITING_PDF_TO_IMG_FILE: [MessageHandler(filters.Document.PDF, receive_pdf_for_img)],
-            WAITING_FOR_MERGE: [MessageHandler(filters.Document.PDF, receive_pdf_for_merge), CommandHandler('done', done_merging)],
-            WAITING_FOR_SPLIT_FILE: [MessageHandler(filters.Document.PDF, receive_pdf_for_split)],
-            WAITING_FOR_SPLIT_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_split_range)],
-            WAITING_FOR_COMPRESS: [MessageHandler(filters.Document.PDF, receive_pdf_for_compress)],
-            WAITING_FOR_IMG_TO_PDF: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_img_for_pdf), CommandHandler('done', done_img_to_pdf)],
-            WAITING_FOR_IMG_TO_TEXT_FILE: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_img_for_text)],
-            WAITING_FOR_AUDIO_FILE: [MessageHandler(filters.AUDIO | filters.Document.ALL, receive_audio_for_conversion)],
-            WAITING_FOR_VIDEO_FILE: [MessageHandler(filters.VIDEO | filters.Document.ALL, receive_video_for_conversion)],
-            WAITING_FOR_FILES_TO_ZIP: [MessageHandler(filters.Document.ALL, receive_file_for_zip), CommandHandler('done', done_zipping)],
-            WAITING_FOR_ARCHIVE_TO_EXTRACT: [MessageHandler(filters.Document.ALL, receive_archive_to_extract)],
+            # បន្ថែម secure_filter ទៅកាន់ MessageHandler ដើម្បីការពារកុំឱ្យគេបញ្ជូនឯកសារចូលផ្ដេសផ្ដាស
+            WAITING_PDF_TO_IMG_FILE: [MessageHandler(filters.Document.PDF & secure_filter, receive_pdf_for_img)],
+            WAITING_FOR_MERGE: [MessageHandler(filters.Document.PDF & secure_filter, receive_pdf_for_merge), CommandHandler('done', done_merging, filters=secure_filter)],
+            WAITING_FOR_SPLIT_FILE: [MessageHandler(filters.Document.PDF & secure_filter, receive_pdf_for_split)],
+            WAITING_FOR_SPLIT_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND & secure_filter, receive_split_range)],
+            WAITING_FOR_COMPRESS: [MessageHandler(filters.Document.PDF & secure_filter, receive_pdf_for_compress)],
+            WAITING_FOR_IMG_TO_PDF: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & secure_filter, receive_img_for_pdf), CommandHandler('done', done_img_to_pdf, filters=secure_filter)],
+            WAITING_FOR_IMG_TO_TEXT_FILE: [MessageHandler((filters.PHOTO | filters.Document.IMAGE) & secure_filter, receive_img_for_text)],
+            WAITING_FOR_AUDIO_FILE: [MessageHandler((filters.AUDIO | filters.Document.ALL) & secure_filter, receive_audio_for_conversion)],
+            WAITING_FOR_VIDEO_FILE: [MessageHandler((filters.VIDEO | filters.Document.ALL) & secure_filter, receive_video_for_conversion)],
+            WAITING_FOR_FILES_TO_ZIP: [MessageHandler(filters.Document.ALL & secure_filter, receive_file_for_zip), CommandHandler('done', done_zipping, filters=secure_filter)],
+            WAITING_FOR_ARCHIVE_TO_EXTRACT: [MessageHandler(filters.Document.ALL & secure_filter, receive_archive_to_extract)],
         },
-        fallbacks=[CommandHandler("cancel", cancel)],
+        fallbacks=[CommandHandler("cancel", cancel, filters=secure_filter)],
         allow_reentry=True
     )
     
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("help", help_command, filters=secure_filter))
+    
+    # ដាក់ Handler នេះនៅខាងចុងគេបង្អស់ ដើម្បីចាប់យកគ្រប់សកម្មភាពពី User ដែលមិនមានសិទ្ធិ
+    application.add_handler(MessageHandler(~secure_filter, unauthorized_user))
     
     # --- ការដំណើរការ Webhook សម្រាប់ Render ---
     FULL_WEBHOOK_URL = WEBHOOK_URL + '/' + BOT_TOKEN
     
+    # បង្កើត Secret Token ដោយខ្លួនឯងដើម្បីសុវត្ថិភាពទ្វេដង
+    # វានឹងតម្រូវឱ្យ Telegram ត្រូវតែផ្ញើ 'SINAN_PRIVATE_BOT_SECRET_2026' មក Render ទើបវាដំណើរការ
+    WEBHOOK_SECRET = "SINAN_PRIVATE_BOT_SECRET_2026"
+    
     print(f">>> Bot កំពុងដំណើរការដោយ Webhook នៅលើ Host: 0.0.0.0, Port: {PORT}, URL_PATH: /{BOT_TOKEN}")
     print(f"!!! ត្រូវប្រាកដថាបានកំណត់ Webhook ទៅកាន់ Telegram: {FULL_WEBHOOK_URL}")
+    print(f"🔒 បានបើកប្រព័ន្ធសុវត្ថិភាព Private Bot និង Webhook Secret")
     
     application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=BOT_TOKEN,
-        webhook_url=FULL_WEBHOOK_URL
+        webhook_url=FULL_WEBHOOK_URL,
+        secret_token=WEBHOOK_SECRET # បន្ថែមចំណុចនេះដើម្បីការពារអ្នកដទៃទាញយកទិន្នន័យពី Render ផ្ទាល់
     )
 
 if __name__ == "__main__":
