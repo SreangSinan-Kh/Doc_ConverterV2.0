@@ -1,7 +1,7 @@
 services:
   - type: web
     name: DocConvert-bot
-    env: python
+    env: docker
     # មិនចាំបាច់ដាក់ pythonVersion នៅទីនេះទេ ប្រសិនបើអ្នកមានឯកសារ .python-version
     # ប៉ុន្តែដាក់ក៏មិនអីដែរ
     
