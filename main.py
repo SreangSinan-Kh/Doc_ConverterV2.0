@@ -26,18 +26,13 @@ try:
     from PyPDF2 import PdfReader, PdfWriter, PdfMerger
     from pdf2image import convert_from_path
 except ImportError:
-    # ក្នុង Render buildCommand នឹងដំឡើង Library ទាំងអស់
-    # នេះគ្រាន់តែជាការពិនិត្យក្នុងតំបន់ប៉ុណ្ណោះ
     print("!!! កំហុស៖ សូមប្រាកដថាបានតម្លើង Library ទាំងអស់៖ pip install PyPDF2 pdf2image Pillow python-telegram-bot ffmpeg-python")
     sys.exit(1)
 
 # --- ការកំណត់តម្លៃសំខាន់ៗសម្រាប់ Render Deployment ---
-# BOT_TOKEN ត្រូវបានយកពី Environment Variable (ដូចដែលបានកំណត់ក្នុង render.yaml)
 BOT_TOKEN: Final = os.environ.get("BOT_TOKEN", "") 
-MAX_FILE_SIZE: Final = 50 * 1024 * 1024 # កំណត់ទំហំ File អតិបរមា 50 MB
+MAX_FILE_SIZE: Final = 50 * 1024 * 1024 # 50 MB
 
-# ទទួលបាន URL និង PORT ពី Render Environment
-# RENDER_EXTERNAL_URL គឺជា URL HTTPS ពេញលេញរបស់ Render Service
 WEBHOOK_URL: Final = os.environ.get("RENDER_EXTERNAL_URL", "") 
 PORT: Final = int(os.environ.get("PORT", "8000")) 
 
@@ -50,17 +45,16 @@ PORT: Final = int(os.environ.get("PORT", "8000"))
  WAITING_FOR_IMG_TO_TEXT_FILE,
  SELECT_AUDIO_OUTPUT_FORMAT, WAITING_FOR_AUDIO_FILE,
  SELECT_VIDEO_OUTPUT_FORMAT, WAITING_FOR_VIDEO_FILE,
- SELECT_ARCHIVE_ACTION, WAITING_FOR_FILES_TO_ZIP, WAITING_FOR_ARCHIVE_TO_EXTRACT
-) = range(16)
+ SELECT_ARCHIVE_ACTION, WAITING_FOR_FILES_TO_ZIP, WAITING_FOR_ARCHIVE_TO_EXTRACT,
+ WAITING_FOR_ENCRYPT_FILE, WAITING_FOR_PASSWORD
+) = range(18)
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 
-# មុខងារនេះត្រូវបានរក្សាទុក ប៉ុន្តែវាគួរតែត្រឡប់ True ព្រោះ FFmpeg ត្រូវបានដំឡើងតាមរយៈ apt-get ក្នុង render.yaml
 def is_ffmpeg_installed():
     return True 
 
 # --- អនុគមន៍ដំណើរការនៅខាងក្រោយ (Background Tasks) ---
-# (រក្សាទុកអនុគមន៍ដំណើរការនៅខាងក្រោយទាំងអស់របស់អ្នក ដោយសារពួកវាត្រឹមត្រូវ)
 
 async def pdf_to_img_task(chat_id, file_path, msg, context, fmt):
     try:
@@ -142,6 +136,27 @@ async def compress_pdf_task(chat_id, file_path, msg, context):
         await context.bot.send_document(chat_id=chat_id, document=open(output_path, 'rb'), filename="Compressed.pdf")
     except Exception as e:
         await context.bot.edit_message_text(f"មានបញ្ហាក្នុងការបន្ថយទំហំឯកសារ។\nកំហុស: {e}", chat_id=chat_id, message_id=msg.message_id)
+    finally:
+        if os.path.exists(file_path): os.remove(file_path)
+        if os.path.exists(output_path): os.remove(output_path)
+        if msg: 
+            try: await context.bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
+            except Exception: pass
+
+async def encrypt_pdf_task(chat_id, file_path, password, msg, context):
+    output_path = f"encrypted_{chat_id}.pdf"
+    try:
+        reader = PdfReader(file_path)
+        writer = PdfWriter()
+        for page in reader.pages:
+            writer.add_page(page)
+        writer.encrypt(password)
+        with open(output_path, "wb") as f: 
+            writer.write(f)
+        await context.bot.edit_message_text(f"🔒 ដាក់លេខកូដបានជោគជ័យ! កំពុងផ្ញើ...", chat_id=chat_id, message_id=msg.message_id)
+        await context.bot.send_document(chat_id=chat_id, document=open(output_path, 'rb'), filename="Secured_Document.pdf")
+    except Exception as e:
+        await context.bot.edit_message_text(f"មានបញ្ហាក្នុងការដាក់លេខកូដឯកសារ។\nកំហុស: {e}", chat_id=chat_id, message_id=msg.message_id)
     finally:
         if os.path.exists(file_path): os.remove(file_path)
         if os.path.exists(output_path): os.remove(output_path)
@@ -261,16 +276,17 @@ async def extract_archive_task(chat_id, file_path, msg, context):
             try: await context.bot.delete_message(chat_id=chat_id, message_id=msg.message_id)
             except Exception: pass
 
-# --- អនុគមន៍សម្រាប់គ្រប់គ្រងលំហូរការងារ (រក្សាទុកទាំងអស់ដូចដើម) ---
+# --- អនុគមន៍សម្រាប់គ្រប់គ្រងលំហូរការងារ ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     keyboard = [
         [InlineKeyboardButton("📄 PDF ទៅជា រូបភាព", callback_data='pdf_to_img')],
         [InlineKeyboardButton("🖇️ បញ្ចូល PDF ច្រើនចូលគ្នា", callback_data='merge_pdf')],
         [InlineKeyboardButton("✂️ បំបែក PDF ជាទំព័រៗ", callback_data='split_pdf')],
-        [InlineKeyboardButton("📦 បន្ថយទំហំ PDF", callback_data='compress_pdf')],
+        [InlineKeyboardButton("📦 បន្ថយទំហំ PDF", callback_data='compress_pdf'),
+         InlineKeyboardButton("🔒 ដាក់លេខកូដ PDF", callback_data='encrypt_pdf')],
         [InlineKeyboardButton("🖼️ រូបភាព ទៅជា PDF", callback_data='img_to_pdf')],
-        [InlineKeyboardButton("📖 រូបភាព ទៅជា អក្សរ", callback_data='img_to_text')],
+        [InlineKeyboardButton("📖 រូបភាព ទៅជា អក្សរ (OCR)", callback_data='img_to_text')],
         [InlineKeyboardButton("🎵 បំប្លែងឯកសារសម្លេង", callback_data='audio_converter')],
         [InlineKeyboardButton("🎬 បំប្លែងឯកសារវីដេអូ", callback_data='video_converter')],
         [InlineKeyboardButton("🗜️ គ្រប់គ្រងឯកសារ Archive", callback_data='archive_manager')],
@@ -291,10 +307,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 📄 **មុខងារ PDF:**
 - `/start` រួចចុច "PDF ទៅជា រូបភាព"
 - `/merge_pdf` បញ្ចូលឯកសារ PDF
+- `/encrypt_pdf` ដាក់លេខកូដការពារ PDF
 
 🖼️ **មុខងាររូបភាព:**
 - `/img_to_pdf` បំប្លែងរូបភាពទៅជា PDF
-- `/img_to_text` ដកស្រង់អក្សរពីរូបភាព
+- `/img_to_text` ដកស្រង់អក្សរពីរូបភាព (OCR)
 
 🎵 **មុខងារសម្លេង:**
 - `/audio_converter` បំប្លែង Format សម្លេង
@@ -311,6 +328,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 """
     await update.message.reply_text(help_text, parse_mode='Markdown')
 
+# [រក្សាទុកមុខងារ PDF ដទៃទៀតដដែល]
 async def start_pdf_to_img(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     keyboard = [
@@ -331,7 +349,7 @@ async def start_conversion_with_format(update: Update, context: ContextTypes.DEF
 async def receive_pdf_for_img(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ (មិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)។")
         return WAITING_PDF_TO_IMG_FILE
     file = await doc.get_file()
     file_path = f"temp_{file.file_id}.pdf"
@@ -344,13 +362,13 @@ async def receive_pdf_for_img(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def start_merge(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     context.user_data['merge_files'] = []
-    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ PDF ម្ដងមួយៗ។ (ទំហំឯកសារនីមួយៗមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)\nនៅពេលរួចរាល់ សូមវាយ /done ។")
+    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ PDF ម្ដងមួយៗ។ (មិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)\nនៅពេលរួចរាល់ សូមវាយ /done ។")
     return WAITING_FOR_MERGE
 
 async def receive_pdf_for_merge(update, context):
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារនេះទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារទំហំធំពេក។")
         return WAITING_FOR_MERGE
     file = await doc.get_file()
     file_path = f"temp_{file.file_id}.pdf"
@@ -372,13 +390,13 @@ async def done_merging(update, context):
 
 async def start_split(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
-    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បំបែក។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បំបែក។")
     return WAITING_FOR_SPLIT_FILE
 
 async def receive_pdf_for_split(update, context):
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារទំហំធំពេក។")
         return WAITING_FOR_SPLIT_FILE
     file = await doc.get_file()
     file_path = f"temp_{file.file_id}.pdf"
@@ -397,19 +415,57 @@ async def receive_split_range(update, context):
 
 async def start_compress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
-    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បន្ថយទំហំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បន្ថយទំហំ។")
     return WAITING_FOR_COMPRESS
 
 async def receive_pdf_for_compress(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារទំហំធំពេក។")
         return WAITING_FOR_COMPRESS
     file = await doc.get_file()
     file_path = f"temp_{file.file_id}.pdf"
     await file.download_to_drive(file_path)
     msg = await update.message.reply_text("✅ ទទួលបានឯកសារ! កំពុងបន្ថយទំហំ...")
     asyncio.create_task(compress_pdf_task(update.effective_chat.id, file_path, msg, context))
+    return ConversationHandler.END
+
+# មុខងារថ្មី៖ ដាក់លេខកូដ PDF
+async def start_encrypt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = "🔒 សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់ដាក់លេខកូដការពារ។"
+    if update.callback_query:
+        await update.callback_query.answer()
+        await update.callback_query.edit_message_text(text)
+    else:
+        await update.message.reply_text(text)
+    return WAITING_FOR_ENCRYPT_FILE
+
+async def receive_pdf_for_encrypt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    doc = update.message.document
+    if doc.file_size > MAX_FILE_SIZE:
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ (មិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)។")
+        return WAITING_FOR_ENCRYPT_FILE
+    
+    file = await doc.get_file()
+    file_path = f"temp_{file.file_id}.pdf"
+    await file.download_to_drive(file_path)
+    
+    context.user_data['encrypt_file_path'] = file_path
+    await update.message.reply_text("✅ ទទួលបានឯកសារ។\n\n🔑 ឥឡូវនេះ សូមវាយបញ្ចូល **លេខកូដសម្ងាត់ (Password)** ដែលអ្នកចង់ដាក់បញ្ជូនមកខ្ញុំ៖")
+    return WAITING_FOR_PASSWORD
+
+async def receive_password_for_encrypt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    password = update.message.text
+    file_path = context.user_data.get('encrypt_file_path')
+    
+    try:
+        await update.message.delete()
+    except Exception:
+        pass
+        
+    msg = await update.message.reply_text("យល់ព្រម! កំពុងធ្វើការចាក់សោរឯកសាររបស់អ្នក...")
+    asyncio.create_task(encrypt_pdf_task(update.effective_chat.id, file_path, password, msg, context))
+    context.user_data.clear()
     return ConversationHandler.END
 
 async def start_img_to_pdf(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -463,7 +519,6 @@ async def receive_img_for_text(update: Update, context: ContextTypes.DEFAULT_TYP
     return ConversationHandler.END
 
 def create_format_buttons(formats, prefix, columns=3):
-    """អនុគមន៍ជំនួយសម្រាប់បង្កើតប៊ូតុង Format ជាក្រឡាចត្រង្គ"""
     buttons = [InlineKeyboardButton(f"{fmt.upper()}", callback_data=f"{prefix}_{fmt.lower()}") for fmt in formats]
     keyboard = [buttons[i:i + columns] for i in range(0, len(buttons), columns)]
     keyboard.append([InlineKeyboardButton("⬅️ ត្រឡប់ក្រោយ", callback_data='main_menu')])
@@ -472,7 +527,7 @@ def create_format_buttons(formats, prefix, columns=3):
 async def start_audio_converter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     if not is_ffmpeg_installed():
-        await query.edit_message_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។ មុខងារនេះមិនអាចប្រើបានទេ។")
+        await query.edit_message_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។")
         return SELECT_ACTION 
     audio_formats = ['AAC', 'AIFF', 'FLAC', 'M4A', 'M4R', 'MMF', 'MP3', 'OGG', 'OPUS', 'WAV', 'WMA']
     keyboard = create_format_buttons(audio_formats, "audio")
@@ -480,10 +535,9 @@ async def start_audio_converter(update: Update, context: ContextTypes.DEFAULT_TY
     return SELECT_ACTION
 
 async def select_audio_output(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query; await query.answer()
     context.user_data['output_format'] = query.data.split('_')[1]
-    await query.edit_message_text(f"✅ បានជ្រើសរើស {context.user_data['output_format'].upper()}។\n\nឥឡូវ សូមផ្ញើឯកសារសម្លេងមកឱ្យខ្ញុំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await query.edit_message_text(f"✅ បានជ្រើសរើស {context.user_data['output_format'].upper()}។\n\nឥឡូវ សូមផ្ញើឯកសារសម្លេងមកឱ្យខ្ញុំ។")
     return WAITING_FOR_AUDIO_FILE
 
 async def receive_audio_for_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -492,7 +546,7 @@ async def receive_audio_for_conversion(update: Update, context: ContextTypes.DEF
         await update.message.reply_text("សូមផ្ញើឯកសារសម្លេង ឬឯកសារជា Document។")
         return WAITING_FOR_AUDIO_FILE
     if file_obj.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។")
         return WAITING_FOR_AUDIO_FILE
     file = await file_obj.get_file()
     file_path = f"temp_{file.file_id}"
@@ -505,7 +559,7 @@ async def receive_audio_for_conversion(update: Update, context: ContextTypes.DEF
 async def start_video_converter(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     if not is_ffmpeg_installed():
-        await query.edit_message_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។ មុខងារនេះមិនអាចប្រើបានទេ។")
+        await query.edit_message_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។")
         return SELECT_ACTION
     video_formats = ['3G2', '3GP', 'AVI', 'FLV', 'MKV', 'MOV', 'MP4', 'MPG', 'OGV', 'WEBM', 'WMV']
     keyboard = create_format_buttons(video_formats, "video")
@@ -513,10 +567,9 @@ async def start_video_converter(update: Update, context: ContextTypes.DEFAULT_TY
     return SELECT_ACTION
 
 async def select_video_output(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    await query.answer()
+    query = update.callback_query; await query.answer()
     context.user_data['output_format'] = query.data.split('_')[1]
-    await query.edit_message_text(f"✅ បានជ្រើសរើស {context.user_data['output_format'].upper()}។\n\nឥឡូវ សូមផ្ញើវីដេអូមកឱ្យខ្ញុំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await query.edit_message_text(f"✅ បានជ្រើសរើស {context.user_data['output_format'].upper()}។\n\nឥឡូវ សូមផ្ញើវីដេអូមកឱ្យខ្ញុំ។")
     return WAITING_FOR_VIDEO_FILE
 
 async def receive_video_for_conversion(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -525,7 +578,7 @@ async def receive_video_for_conversion(update: Update, context: ContextTypes.DEF
         await update.message.reply_text("សូមផ្ញើឯកសារវីដេអូ ឬឯកសារជា Document។")
         return WAITING_FOR_VIDEO_FILE
     if file_obj.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។")
         return WAITING_FOR_VIDEO_FILE
     file = await file_obj.get_file()
     file_path = f"temp_{file.file_id}"
@@ -548,13 +601,13 @@ async def start_archive_manager(update: Update, context: ContextTypes.DEFAULT_TY
 async def start_create_zip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
     context.user_data['zip_files'] = []
-    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារម្ដងមួយៗដើម្បីបញ្ចូលទៅក្នុង ZIP។ (ទំហំឯកសារនីមួយៗមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)\nពេលរួចរាល់ សូមវាយ /done ។")
+    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារម្ដងមួយៗដើម្បីបញ្ចូលទៅក្នុង ZIP។\nពេលរួចរាល់ សូមវាយ /done ។")
     return WAITING_FOR_FILES_TO_ZIP
 
 async def receive_file_for_zip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារនេះទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារនេះទំហំធំពេក។")
         return WAITING_FOR_FILES_TO_ZIP
     file = await doc.get_file()
     file_path = f"temp_{file.file_unique_id}_{doc.file_name}"
@@ -576,13 +629,13 @@ async def done_zipping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_extract_archive(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query; await query.answer()
-    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ Archive (ZIP ឬ TAR.GZ) ដែលអ្នកចង់ពន្លា។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await query.edit_message_text(f"✅ សូមផ្ញើឯកសារ Archive (ZIP ឬ TAR.GZ) ដែលអ្នកចង់ពន្លា។")
     return WAITING_FOR_ARCHIVE_TO_EXTRACT
 
 async def receive_archive_to_extract(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
     if doc.file_size > MAX_FILE_SIZE:
-        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។ សូមផ្ញើឯកសារដែលមានទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB។")
+        await update.message.reply_text(f"❌ កំហុស៖ ឯកសារមានទំហំធំពេក។")
         return WAITING_FOR_ARCHIVE_TO_EXTRACT
     file = await doc.get_file()
     file_path = f"temp_{file.file_unique_id}_{doc.file_name}"
@@ -601,9 +654,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return ConversationHandler.END
 
 # --- អនុគមន៍ថ្មីសម្រាប់ទទួល Commands ដោយផ្ទាល់ ---
-
 async def start_pdf_to_img_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម PDF to Image តាមរយៈ Command """
     await update.message.reply_text("សូមជ្រើសរើសប្រភេទរូបភាព៖", reply_markup=InlineKeyboardMarkup([
         [InlineKeyboardButton("➡️ បំប្លែងទៅជា JPG", callback_data='fmt_jpeg')],
         [InlineKeyboardButton("➡️ បំប្លែងទៅជា PNG", callback_data='fmt_png')],
@@ -612,36 +663,34 @@ async def start_pdf_to_img_command(update: Update, context: ContextTypes.DEFAULT
     return SELECT_ACTION
 
 async def start_merge_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Merge PDF តាមរយៈ Command """
     context.user_data['merge_files'] = []
-    await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF ម្ដងមួយៗ។ (ទំហំឯកសារនីមួយៗមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)\nនៅពេលរួចរាល់ សូមវាយ /done ។")
+    await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF ម្ដងមួយៗ។\nនៅពេលរួចរាល់ សូមវាយ /done ។")
     return WAITING_FOR_MERGE
 
 async def start_split_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Split PDF តាមរយៈ Command """
-    await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បំបែក។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បំបែក។")
     return WAITING_FOR_SPLIT_FILE
 
 async def start_compress_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Compress PDF តាមរយៈ Command """
-    await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បន្ថយទំហំ។ (ទំហំមិនលើស {int(MAX_FILE_SIZE / 1024 / 1024)}MB)")
+    await update.message.reply_text(f"✅ សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់បន្ថយទំហំ។")
     return WAITING_FOR_COMPRESS
 
+async def start_encrypt_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    await update.message.reply_text("🔒 សូមផ្ញើឯកសារ PDF មួយដែលអ្នកចង់ដាក់លេខកូដការពារ។")
+    return WAITING_FOR_ENCRYPT_FILE
+
 async def start_img_to_pdf_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Image to PDF តាមរយៈ Command """
     context.user_data['img_to_pdf_files'] = []
     await update.message.reply_text("✅ សូមផ្ញើរូបភាពម្ដងមួយៗ។\nនៅពេលរួចរាល់ សូមវាយ /done ។")
     return WAITING_FOR_IMG_TO_PDF
 
 async def start_img_to_text_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Image to Text តាមរយៈ Command """
     await update.message.reply_text("✅ សូមផ្ញើរូបភាពមួយមកឱ្យខ្ញុំ ដើម្បីបំប្លែងទៅជាអក្សរ។\nដើម្បីបោះបង់ សូមវាយ /cancel")
     return WAITING_FOR_IMG_TO_TEXT_FILE
 
 async def start_audio_converter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Audio Converter តាមរយៈ Command """
     if not is_ffmpeg_installed():
-        await update.message.reply_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។ មុខងារនេះមិនអាចប្រើបានទេ។")
+        await update.message.reply_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។")
         return ConversationHandler.END
     audio_formats = ['AAC', 'AIFF', 'FLAC', 'M4A', 'M4R', 'MMF', 'MP3', 'OGG', 'OPUS', 'WAV', 'WMA']
     keyboard = create_format_buttons(audio_formats, "audio")
@@ -649,9 +698,8 @@ async def start_audio_converter_command(update: Update, context: ContextTypes.DE
     return SELECT_ACTION
 
 async def start_video_converter_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Video Converter តាមរយៈ Command """
     if not is_ffmpeg_installed():
-        await update.message.reply_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។ មុខងារនេះមិនអាចប្រើបានទេ។")
+        await update.message.reply_text("❌ កំហុស៖ FFmpeg មិនត្រូវបានដំឡើងទេ។")
         return ConversationHandler.END
     video_formats = ['3G2', '3GP', 'AVI', 'FLV', 'MKV', 'MOV', 'MP4', 'MPG', 'OGV', 'WEBM', 'WMV']
     keyboard = create_format_buttons(video_formats, "video")
@@ -659,7 +707,6 @@ async def start_video_converter_command(update: Update, context: ContextTypes.DE
     return SELECT_ACTION
 
 async def start_archive_manager_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """ ចាប់ផ្តើម Archive Manager តាមរយៈ Command """
     keyboard = [
         [InlineKeyboardButton("➕ បង្កើតឯកសារ ZIP", callback_data='archive_create')],
         [InlineKeyboardButton("➖ ពន្លាឯកសារ Archive", callback_data='archive_extract')],
@@ -668,21 +715,18 @@ async def start_archive_manager_command(update: Update, context: ContextTypes.DE
     await update.message.reply_text(text="សូមជ្រើសរើសសកម្មភាពសម្រាប់ Archive៖", reply_markup=InlineKeyboardMarkup(keyboard))
     return SELECT_ACTION
 
-# --- Main Application Runner (កែប្រែសម្រាប់ Render Webhook) ---
+# --- Main Application Runner ---
 def main() -> None:
-    # ពិនិត្យ Environment Variables
     if not BOT_TOKEN:
-        print("!!! កំហុស៖ BOT_TOKEN មិនត្រូវបានកំណត់។ សូមកំណត់វានៅក្នុង Environment Variable (render.yaml)។")
+        print("!!! កំហុស៖ BOT_TOKEN មិនត្រូវបានកំណត់។")
         sys.exit(1)
         
     if not WEBHOOK_URL:
-        print("!!! កំហុស៖ RENDER_EXTERNAL_URL មិនត្រូវបានកំណត់។ ត្រូវប្រាកដថាប្រើ Render Web Service Environment។")
-        # មិនអាចដំណើរការ Webhook ដោយគ្មាន URL ពេញលេញបានទេ។
+        print("!!! កំហុស៖ RENDER_EXTERNAL_URL មិនត្រូវបានកំណត់។")
         sys.exit(1)
 
     application = Application.builder().token(BOT_TOKEN).read_timeout(30).build()
     
-    # --- Conversation Handler (រក្សាទុកដូចដើម) ---
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler("start", start),
@@ -690,6 +734,7 @@ def main() -> None:
             CommandHandler("merge_pdf", start_merge_command),
             CommandHandler("split_pdf", start_split_command),
             CommandHandler("compress_pdf", start_compress_command),
+            CommandHandler("encrypt_pdf", start_encrypt_command), # ថែម Command
             CommandHandler("img_to_pdf", start_img_to_pdf_command),
             CommandHandler("img_to_text", start_img_to_text_command),
             CommandHandler("audio_converter", start_audio_converter_command),
@@ -703,6 +748,7 @@ def main() -> None:
                 CallbackQueryHandler(start_merge, pattern='^merge_pdf$'),
                 CallbackQueryHandler(start_split, pattern='^split_pdf$'),
                 CallbackQueryHandler(start_compress, pattern='^compress_pdf$'),
+                CallbackQueryHandler(start_encrypt, pattern='^encrypt_pdf$'), # ថែមប៊ូតុងមុខងារ
                 CallbackQueryHandler(start_img_to_pdf, pattern='^img_to_pdf$'),
                 CallbackQueryHandler(start_img_to_text, pattern='^img_to_text$'),
                 CallbackQueryHandler(start_audio_converter, pattern='^audio_converter$'),
@@ -719,6 +765,8 @@ def main() -> None:
             WAITING_FOR_SPLIT_FILE: [MessageHandler(filters.Document.PDF, receive_pdf_for_split)],
             WAITING_FOR_SPLIT_RANGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_split_range)],
             WAITING_FOR_COMPRESS: [MessageHandler(filters.Document.PDF, receive_pdf_for_compress)],
+            WAITING_FOR_ENCRYPT_FILE: [MessageHandler(filters.Document.PDF, receive_pdf_for_encrypt)], # ទទួលឯកសារដាក់កូដ
+            WAITING_FOR_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_password_for_encrypt)], # ទទួល Password
             WAITING_FOR_IMG_TO_PDF: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_img_for_pdf), CommandHandler('done', done_img_to_pdf)],
             WAITING_FOR_IMG_TO_TEXT_FILE: [MessageHandler(filters.PHOTO | filters.Document.IMAGE, receive_img_for_text)],
             WAITING_FOR_AUDIO_FILE: [MessageHandler(filters.AUDIO | filters.Document.ALL, receive_audio_for_conversion)],
@@ -733,11 +781,9 @@ def main() -> None:
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("help", help_command))
     
-    # --- ការដំណើរការ Webhook សម្រាប់ Render ---
     FULL_WEBHOOK_URL = WEBHOOK_URL + '/' + BOT_TOKEN
     
-    print(f">>> Bot កំពុងដំណើរការដោយ Webhook នៅលើ Host: 0.0.0.0, Port: {PORT}, URL_PATH: /{BOT_TOKEN}")
-    print(f"!!! ត្រូវប្រាកដថាបានកំណត់ Webhook ទៅកាន់ Telegram: {FULL_WEBHOOK_URL}")
+    print(f">>> Bot កំពុងដំណើរការដោយ Webhook នៅលើ Host: 0.0.0.0, Port: {PORT}")
     
     application.run_webhook(
         listen="0.0.0.0",
